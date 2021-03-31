@@ -1,26 +1,70 @@
-import java.io.*;
+
+import java.io.IOException;
 import java.nio.charset.Charset;
 import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.List;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 public class Main {
 
-    // grepdir dir pattern [encoding]
+    // Main.java dir pattern [encoding]
     public static void main(String[] args) {
         if (args.length < 2 || args.length > 3) {
             usage();
             return;
         }
         Charset charset = args.length == 2 ? Charset.defaultCharset() : extractCharset(args[2]);
+        if (charset == null) return;
         Pattern pattern = extractPattern(args[1]);
-        String dirName = args[0];
-        final PatternSearcher searcher = new PatternSearcher(charset, pattern);
-        searcher.search(dirName);
+        if (pattern == null) return;
+        Path dir = extractDirectory(args[0]);
+        if (dir != null) PatternSearcher.search(dir, charset, pattern);
+    }
+
+    private static Path extractDirectory(String dirName) {
+        try {
+            return Paths.get(dirName);
+        } catch (InvalidPathException e) {
+            System.err.println("Path is invalid: " + dirName);
+            usage();
+        }
+        return null;
+    }
+
+    private static Pattern extractPattern(String regex) {
+        try {
+            return Pattern.compile(regex);
+        } catch (PatternSyntaxException e) {
+            System.err.println("Invalid pattern: " + regex);
+            usage();
+        }
+        return null;
+    }
+
+    private static Charset extractCharset(String encodingName) {
+        try {
+            return Charset.forName(encodingName);
+        } catch (IllegalArgumentException e) {
+            System.err.println("Unknown encoding: " + encodingName);
+            usage();
+        }
+        return null;
+    }
+
+    private static void usage() {
+        System.err.println("""
+                Usage: grepdir dir pattern [encoding]
+                 Recursively traverse given directory and find specified pattern in files
+                    dir - directory to traverse
+                    pattern - what to search in files
+                    encoding - files encoding in directory, will use system encoding by default 
+                """);
     }
 
     private static class PatternSearcher {
@@ -32,22 +76,46 @@ public class Main {
             this.pattern = pattern;
         }
 
-        private void search(String dirName) {
-            Path dir;
-            try {
-                dir = Paths.get(dirName);
-            } catch (InvalidPathException e) {
-                throw new GrepDirException("Path is invalid: " + dirName, e);
-            }
+        private static void search(Path dir, Charset charset, Pattern pattern) {
+            List<Path> filesList;
             try (Stream<Path> filePaths = Files.list(dir)) {
-                filePaths.forEach(filePath -> search(filePath));
+                filesList = filePaths.collect(Collectors.toList());
             } catch (IOException e) {
-                throw new GrepDirException("Failed to access directory: " + dirName, e);
+                error("Cannot get files from directory %s", dir);
+                usage();
+                return;
+            }
+            PatternSearcher searcher = new PatternSearcher(charset, pattern);
+            searcher.searchInDir(filesList);
+        }
+
+        private static Boolean isDirectory(Path path) {
+            try {
+                return Files.isDirectory(path);
+            } catch (SecurityException e) {
+                error("Access to file %s was denied, skipping...", path);
+            }
+            return null;
+        }
+
+        private void searchInDir(List<Path> pathsList) {
+            for (Path filePath : pathsList) {
+                Boolean isDirectory = isDirectory(filePath);
+                if (isDirectory == null) continue;
+                if (isDirectory) {
+                    try (Stream<Path> filePaths = Files.list(filePath)) {
+                        searchInDir(filePaths.collect(Collectors.toList()));
+                    } catch (IOException e) {
+                        error("Failed to get files in directory %s, skipping...", filePath);
+                    }
+                } else {
+                    findPatternInFile(filePath);
+                }
             }
         }
 
-        private void search(Path filePath) {
-            try (final Stream<String> lines = Files.lines(filePath, charset)) {
+        private void findPatternInFile(Path filePath) {
+            try (Stream<String> lines = Files.lines(filePath, charset)) {
                 LineCounter lineCounter = new LineCounter();
                 lines.forEach(line -> {
                     if (pattern.matcher(line).find()) {
@@ -56,44 +124,24 @@ public class Main {
                     lineCounter.inc();
                 });
             } catch (SecurityException e) {
-                throw new GrepDirException(String.format("Access to file %s was denied", filePath.normalize().toAbsolutePath()), e);
+                error("Access to file %s was denied, skipping...", filePath);
             } catch (IOException e) {
-                throw new GrepDirException(String.format("Failed to read from file %s", filePath.normalize().toAbsolutePath()), e);
+                error("Failed to read from file %s, skipping...", filePath);
             }
+        }
+
+        private static void error(String message, Path path) {
+            System.err.printf(message + "%n", path.normalize().toAbsolutePath());
         }
     }
 
+    // Used to count lines in file since Files#lines returns stream
+    // and forEach lambda can work only with effectively final variables
     private static class LineCounter {
         private int cnt = 1;
 
         private void inc() {
             cnt++;
         }
-    }
-
-    private static Pattern extractPattern(String regex) {
-        try {
-            return Pattern.compile(regex);
-        } catch (PatternSyntaxException e) {
-            throw new GrepDirException("Invalid pattern: " + regex, e);
-        }
-    }
-
-    private static Charset extractCharset(String encodingName) {
-        try {
-            return Charset.forName(encodingName);
-        } catch (IllegalArgumentException e) {
-            throw new GrepDirException("Unknown encoding: " + encodingName, e);
-        }
-    }
-
-    private static void usage() {
-        System.err.println("""
-    Usage: grepdir dir pattern [encoding]
-     Recursively traverse given directory and find specified pattern in files
-        dir - directory to traverse
-        pattern - what to search in files
-        encoding - files encoding in directory, will use system encoding by default 
-    """);
     }
 }
