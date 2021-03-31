@@ -1,3 +1,4 @@
+#!/usr/bin/java --source 15
 
 import java.io.IOException;
 import java.nio.charset.Charset;
@@ -13,7 +14,7 @@ import java.util.stream.Stream;
 
 public class Main {
 
-    // Main.java dir pattern [encoding]
+    // grepdir dir pattern [encoding]
     public static void main(String[] args) {
         if (args.length < 2 || args.length > 3) {
             usage();
